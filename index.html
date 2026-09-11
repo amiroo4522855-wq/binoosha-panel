@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>پنل مدیریت — بینوشا</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ============ ورود ============ -->
+<div id="gate" class="gate">
+  <div class="gate-card">
+    <div class="gate-logo">🟣</div>
+    <h1>پنل مدیریت بینوشا</h1>
+    <p class="gate-sub">دسترسی فقط برای تیم</p>
+
+    <div id="gatePw" class="gate-step">
+      <label for="pwInput">رمز ورود</label>
+      <input type="password" id="pwInput" placeholder="••••••••" autocomplete="current-password">
+      <div id="pwErr" class="gate-err"></div>
+      <button id="pwBtn" class="gbtn">ورود</button>
+    </div>
+
+    <div id="gateTok" class="gate-step hidden">
+      <label for="botTok">توکن ربات تلگرام</label>
+      <input type="password" id="botTok" placeholder="123456:ABC..." dir="ltr">
+      <label for="ghTok">توکن گیت‌هاب (دسترسی repo)</label>
+      <input type="password" id="ghTok" placeholder="ghp_..." dir="ltr">
+      <div id="tokErr" class="gate-err"></div>
+      <button id="tokBtn" class="gbtn">اتصال و ورود</button>
+      <p class="gate-note">توکن‌ها فقط در مرورگر خودت ذخیره می‌شوند — نه روی سرور، نه در کد.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ اپ ============ -->
+<div id="app" class="app hidden">
+  <header class="topbar">
+    <div class="brand"><span class="dot"></span> پنل بینوشا</div>
+    <div class="top-actions">
+      <span id="statusBadge" class="badge open">● نظرسنجی باز</span>
+      <button id="syncBtn" class="tbtn" title="سینک فوری">⟳ سینک</button>
+      <button id="logoutBtn" class="tbtn ghost" title="خروج">خروج</button>
+    </div>
+  </header>
+
+  <nav class="nav">
+    <button class="navi active" data-view="dash">📊 داشبورد</button>
+    <button class="navi" data-view="responses">💬 پاسخ‌ها</button>
+    <button class="navi" data-view="activity">🕓 فعالیت</button>
+    <button class="navi" data-view="settings">⚙️ تنظیمات</button>
+  </nav>
+
+  <main class="main">
+    <!-- داشبورد -->
+    <section id="view-dash" class="view active">
+      <div class="kpis" id="kpis"></div>
+      <div class="grid">
+        <div class="card wide"><h3>روند ارسال نظرات (۱۴ روز اخیر)</h3><canvas id="chTimeline" height="180"></canvas></div>
+        <div class="card"><h3>حس کاربران نسبت به بینوشا</h3><canvas id="chMood" height="200"></canvas></div>
+        <div class="card"><h3>امتیاز کلی (ستاره)</h3><canvas id="chStars" height="200"></canvas></div>
+        <div class="card"><h3>شاخص معرفی (NPS)</h3><canvas id="chNps" height="200"></canvas><div id="npsScore" class="nps-score"></div></div>
+        <div class="card"><h3>موضوعات پیشنهادی</h3><canvas id="chTopics" height="220"></canvas></div>
+        <div class="card"><h3>پلتفرم‌های دنبال‌شده</h3><canvas id="chPlatforms" height="200"></canvas></div>
+        <div class="card"><h3>کیفیت سایت</h3><canvas id="chSite" height="200"></canvas></div>
+        <div class="card"><h3>ویدیوها</h3><canvas id="chVideo" height="200"></canvas></div>
+        <div class="card wide"><h3>🔥 لپ‌تاپ‌هایی که مردم می‌خواهند</h3><div id="laptopCloud" class="chips"></div></div>
+        <div class="card wide"><h3>💡 آخرین ایده‌های مردم</h3><div id="ideaList" class="ideas"></div></div>
+      </div>
+    </section>
+
+    <!-- پاسخ‌ها -->
+    <section id="view-responses" class="view">
+      <div class="resp-toolbar">
+        <input id="respSearch" type="search" placeholder="جستجو در پاسخ‌ها… (نام، یوزرنیم، ایده)">
+        <select id="respSort">
+          <option value="new">جدیدترین</option>
+          <option value="old">قدیمی‌ترین</option>
+          <option value="nps">بیشترین NPS</option>
+        </select>
+      </div>
+      <div id="respList" class="resp-list"></div>
+    </section>
+
+    <!-- فعالیت -->
+    <section id="view-activity" class="view">
+      <div id="actFeed" class="feed"></div>
+    </section>
+
+    <!-- تنظیمات -->
+    <section id="view-settings" class="view">
+      <div class="card setcard">
+        <h3>وضعیت نظرسنجی</h3>
+        <p class="muted">با بستن نظرسنجی، همه کاربران پیام «نظرسنجی بسته شده» می‌بینند. تغییر تقریباً فوری اعمال می‌شود.</p>
+        <div class="toggle-row">
+          <span id="toggleLabel">نظرسنجی باز است</span>
+          <button id="surveyToggle" class="switch on" role="switch" aria-checked="true"><i></i></button>
+        </div>
+      </div>
+      <div class="card setcard">
+        <h3>خروجی گرفتن</h3>
+        <div class="row-btns">
+          <button id="expCsv" class="gbtn small">📄 دانلود CSV</button>
+          <button id="expJson" class="gbtn small">🧾 دانلود JSON</button>
+        </div>
+      </div>
+      <div class="card setcard">
+        <h3>اطلاعات اتصال</h3>
+        <div id="connInfo" class="conn"></div>
+        <button id="reTokBtn" class="gbtn small ghost">تغییر توکن‌ها</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="toast" class="toast"></div>
+<script src="charts.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
