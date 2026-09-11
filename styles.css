@@ -223,3 +223,29 @@ body {
   .kpi .v { font-size: 22px; }
   .kv { grid-template-columns: 90px 1fr; }
 }
+
+/* ============ افزوده‌های نسخه بدون توکن ============ */
+.pill {
+  background: rgba(167, 139, 250, 0.18); color: #D6C9FF; border-radius: 99px;
+  font-size: 10.5px; padding: 2px 8px; margin-right: 4px; vertical-align: middle;
+}
+.filter-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.fchip {
+  background: var(--card); border: 1px solid var(--card-brd); color: var(--muted);
+  border-radius: 99px; padding: 8px 15px; font: inherit; font-size: 12.5px; cursor: pointer;
+  transition: 0.2s;
+}
+.fchip.active { background: rgba(167, 139, 250, 0.16); border-color: rgba(167, 139, 250, 0.5); color: var(--txt); font-weight: 700; }
+.tokinp {
+  width: 100%; background: rgba(0, 0, 0, 0.35); border: 1px solid var(--card-brd); color: var(--txt);
+  border-radius: 12px; padding: 11px 14px; font: inherit; font-size: 13px; outline: none; margin-bottom: 10px;
+}
+.tokinp:focus { border-color: var(--brand); }
+.sum { cursor: pointer; font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+details.setcard .muted { margin-bottom: 10px; }
+.muted.small { font-size: 11.5px; }
+code {
+  background: rgba(0, 0, 0, 0.4); border-radius: 6px; padding: 2px 7px;
+  font-size: 11.5px; color: #D6C9FF;
+}
+#tokState { margin-top: 10px; }

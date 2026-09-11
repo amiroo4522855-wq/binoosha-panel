@@ -1,18 +1,25 @@
-/* app.js — پنل مدیریت بینوشا
-   داده‌ها: ریپوی خصوصی binoosha-data (از طریق GitHub API با توکن مدیر)
-   توکن‌ها فقط در localStorage همان مرورگر — هیچ سروری در میان نیست. */
+/* app.js — پنل مدیریت بینوشا (نسخه بدون توکن)
+   ورود فقط با رمز. داده‌ها به‌صورت رمزنگاری‌شده (AES-256-GCM) از
+   data.enc خوانده و با کلید مشتق از رمز (PBKDF2) باز می‌شوند.
+   توکن گیت‌هاب فقط «اختیاری» برای بستن/باز کردن نظرسنجی و سینک فوری است. */
 'use strict';
 (function () {
   var OWNER = 'amiroo4522855-wq';
   var DATA_REPO = 'binoosha-data';
   var SURVEY_REPO = 'binoosha-survey';
-  var PASS = '@#$&@@3';
-  var LS = { pw: 'bn_pw_ok', bot: 'bn_bot_token', gh: 'bn_gh_token' };
+  var PANEL_REPO = 'binoosha-panel';
+  var ENC_URL = 'https://raw.githubusercontent.com/' + OWNER + '/' + PANEL_REPO + '/main/data.enc';
+  var STATUS_URL = 'https://raw.githubusercontent.com/' + OWNER + '/' + SURVEY_REPO + '/main/status.json';
+  var LS = { gh: 'bn_gh_token', localLog: 'bn_local_log' };
 
   var $ = function (s) { return document.querySelector(s); };
   var fa = window.Charts.fa;
 
-  /* ---------- برچسب‌ها (هم‌راستا با اپ نظرسنجی) ---------- */
+  var DATA = { subs: [], events: [], panelLog: [], status: { open: true }, savedAt: 0 };
+  var cryptoKey = null;
+  var actFilter = 'all';
+
+  /* ---------- برچسب‌ها ---------- */
   var LBL = {
     mood: { 'very-happy': 'خیلی راضی‌ام', 'happy': 'راضی‌ام', 'neutral': 'معمولیه', 'unhappy': 'ناراضی‌ام', 'angry': 'اصلاً راضی نیستم' },
     video: { 'keep-style': 'همین سبک ادامه پیدا کنه', 'deep-review': 'بررسی‌های تخصصی‌تر', 'shorter': 'ویدیوهای کوتاه‌تر', 'tutorial': 'آموزش بیشتر', 'fun': 'سرگرم‌کننده‌تر', 'other': 'ایده دیگری دارم' },
@@ -22,15 +29,13 @@
   };
   var MOOD_COLOR = { 'very-happy': '#34D399', 'happy': '#22D3EE', 'neutral': '#FBBF24', 'unhappy': '#FB7185', 'angry': '#EF4444' };
 
-  var DATA = { subs: [], events: [], panelLog: [], status: { open: true } };
-
   /* ---------- ابزارها ---------- */
   function toast(msg, ms) {
     var t = $('#toast');
     t.textContent = msg;
     t.classList.add('show');
     clearTimeout(t._to);
-    t._to = setTimeout(function () { t.classList.remove('show'); }, ms || 2600);
+    t._to = setTimeout(function () { t.classList.remove('show'); }, ms || 2800);
   }
   function fmtDate(ts) {
     try { return new Date(ts).toLocaleString('fa-IR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
@@ -41,18 +46,103 @@
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
-  function tok() { return localStorage.getItem(LS.gh) || ''; }
 
-  /* ---------- GitHub API ---------- */
+  /* ---------- رمزنگاری (WebCrypto) ---------- */
+  function b64ToBuf(b64) {
+    var bin = atob(b64), arr = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return arr;
+  }
+  function deriveKey(pass, salt) {
+    return crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveKey'])
+      .then(function (base) {
+        return crypto.subtle.deriveKey(
+          { name: 'PBKDF2', salt: salt, iterations: 250000, hash: 'SHA-256' },
+          base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']
+        );
+      });
+  }
+
+  /* ---------- خواندن و رمزگشایی داده ---------- */
+  function loadEncrypted(pass) {
+    return fetch(ENC_URL + '?cb=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error('فایل داده پیدا نشد'); return r.json(); })
+      .then(function (blob) {
+        return deriveKey(pass, b64ToBuf(blob.salt)).then(function (key) {
+          return crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv: b64ToBuf(blob.iv), additionalData: undefined },
+            key, concat(b64ToBuf(blob.ct), b64ToBuf(blob.tag))
+          ).then(function (plain) {
+            cryptoKey = key;
+            return JSON.parse(new TextDecoder().decode(plain));
+          });
+        });
+      })
+      .catch(function (e) {
+        if (e && (e.name === 'OperationError')) throw new Error('رمز اشتباه است');
+        throw e;
+      });
+  }
+  function concat(a, b) {
+    var out = new Uint8Array(a.length + b.length);
+    out.set(a); out.set(b, a.length);
+    return out;
+  }
+
+  function loadStatus() {
+    return fetch(STATUS_URL + '?cb=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : { open: true }; })
+      .then(function (j) { DATA.status = j || { open: true }; })
+      .catch(function () {});
+  }
+
+  function refreshData(silent) {
+    var pass = sessionStorage.getItem('bn_pass');
+    if (!pass) return Promise.reject(new Error('no session'));
+    return Promise.all([loadEncrypted(pass), loadStatus()]).then(function (r) {
+      var d = r[0];
+      DATA.subs = d.subs || [];
+      DATA.events = d.events || [];
+      DATA.panelLog = (d.panelLog || []).concat(localLog());
+      DATA.savedAt = d.savedAt || 0;
+      renderAll();
+      if (!silent) toast('✅ داده‌ها بروزرسانی شد' + (DATA.savedAt ? ' — آخرین سینک: ' + fmtDate(DATA.savedAt) : ''));
+    });
+  }
+
+  /* ---------- لاگ محلی فعالیت پنل ---------- */
+  function localLog() {
+    try { return JSON.parse(localStorage.getItem(LS.localLog) || '[]'); } catch (e) { return []; }
+  }
+  function logAction(action) {
+    var arr = localLog();
+    arr.push({ ts: Date.now(), type: 'panel', action: action });
+    localStorage.setItem(LS.localLog, JSON.stringify(arr.slice(-200)));
+    // اگر توکن مدیر هست، در ریپو هم ثبت شود تا در همه دستگاه‌ها دیده شود
+    var t = localStorage.getItem(LS.gh);
+    if (t) {
+      gh('GET', '/repos/' + OWNER + '/' + PANEL_REPO + '/contents/panel-log.json')
+        .catch(function () { return { sha: null, content: '' }; })
+        .then(function (f) {
+          var remote = [];
+          try { remote = JSON.parse(f.content ? atob(f.content) : '[]'); } catch (e) {}
+          remote.push({ ts: Date.now(), type: 'panel', action: action });
+          return gh('PUT', '/repos/' + OWNER + '/' + PANEL_REPO + '/contents/panel-log.json', {
+            message: 'panel: ' + action,
+            content: btoa(unescape(encodeURIComponent(JSON.stringify(remote.slice(-500), null, 2)))),
+            sha: f.sha || undefined, branch: 'main'
+          });
+        }).catch(function () {});
+    }
+  }
+
+  /* ---------- GitHub API (فقط با توکن اختیاری مدیر) ---------- */
   function gh(method, path, body) {
+    var t = localStorage.getItem(LS.gh);
+    if (!t) return Promise.reject(new Error('no token'));
     return fetch('https://api.github.com' + path, {
       method: method,
-      headers: {
-        'Authorization': 'token ' + tok(),
-        'Accept': 'application/vnd.github+json',
-        'Content-Type': 'application/json',
-        'User-Agent': 'binoosha-panel'
-      },
+      headers: { 'Authorization': 'token ' + t, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json', 'User-Agent': 'binoosha-panel' },
       body: body ? JSON.stringify(body) : undefined
     }).then(function (r) {
       return r.json().then(function (j) {
@@ -61,55 +151,14 @@
       });
     });
   }
-  function ghGetFile(repo, path) {
-    return gh('GET', '/repos/' + OWNER + '/' + repo + '/contents/' + path + '?_=' + Date.now())
-      .then(function (f) {
-        return { sha: f.sha, content: f.content ? atob(f.content) : '' };
-      });
-  }
-  function ghPutFile(repo, path, content, sha, msg) {
-    return gh('PUT', '/repos/' + OWNER + '/' + repo + '/contents/' + path, {
-      message: msg,
-      content: btoa(unescape(encodeURIComponent(content))),
-      sha: sha,
-      branch: 'main'
-    });
-  }
-
-  /* ---------- بارگذاری داده ---------- */
-  function loadData() {
-    return Promise.all([
-      ghGetFile(DATA_REPO, 'data/submissions.json').catch(function () { return { sha: null, content: '[]' }; }),
-      ghGetFile(DATA_REPO, 'data/events.jsonl').catch(function () { return { sha: null, content: '' }; }),
-      ghGetFile(DATA_REPO, 'data/panel-log.json').catch(function () { return { sha: null, content: '[]' }; }),
-      ghGetFile(SURVEY_REPO, 'status.json').catch(function () { return { sha: null, content: '{"open":true}' }; })
-    ]).then(function (r) {
-      DATA.subsFile = r[0]; DATA.evFile = r[1]; DATA.logFile = r[2]; DATA.stFile = r[3];
-      try { DATA.subs = JSON.parse(r[0].content) || []; } catch (e) { DATA.subs = []; }
-      DATA.events = r[1].content.split('\n').filter(Boolean).map(function (l) { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean);
-      try { DATA.panelLog = JSON.parse(r[2].content) || []; } catch (e) { DATA.panelLog = []; }
-      try { DATA.status = JSON.parse(r[3].content) || { open: true }; } catch (e) { DATA.status = { open: true }; }
-    });
-  }
-
-  /* ---------- لاگ فعالیت پنل ---------- */
-  function logAction(type, detail) {
-    var entry = { ts: Date.now(), type: 'panel', action: type, detail: detail || '' };
-    DATA.panelLog.push(entry);
-    var content = JSON.stringify(DATA.panelLog.slice(-500), null, 2);
-    ghPutFile(DATA_REPO, 'data/panel-log.json', content, DATA.logFile && DATA.logFile.sha, 'panel: ' + type)
-      .then(function () { return ghGetFile(DATA_REPO, 'data/panel-log.json'); })
-      .then(function (f) { DATA.logFile = f; })
-      .catch(function (e) { console.warn('log fail', e); });
-  }
 
   /* ---------- KPI ---------- */
-  function countAnim(el, to, suffix) {
+  function countAnim(el, to) {
     var t0 = null;
     function step(t) {
       if (!t0) t0 = t;
       var p = Math.min(1, (t - t0) / 800);
-      el.textContent = fa(Math.round(to * (1 - Math.pow(1 - p, 3)))) + (suffix || '');
+      el.textContent = fa(Math.round(to * (1 - Math.pow(1 - p, 3))));
       if (p < 1) requestAnimationFrame(step);
     }
     requestAnimationFrame(step);
@@ -141,11 +190,10 @@
     $('#kpis').innerHTML = items.map(function (i, idx) {
       return '<div class="kpi" style="--k:' + i.c + '"><div class="v" id="kpi' + idx + '">' + (i.raw ? i.v : fa(0)) + '</div><div class="k">' + i.k + '</div></div>';
     }).join('');
-    items.forEach(function (i, idx) {
-      if (!i.raw) countAnim($('#kpi' + idx), i.v);
-    });
+    items.forEach(function (i, idx) { if (!i.raw) countAnim($('#kpi' + idx), i.v); });
     var ns = $('#npsScore');
     if (ns) ns.innerHTML = 'شاخص خالص معرفی: <b>' + fa(npsScore) + '</b> — ' + (npsScore > 30 ? 'عالی! مردم شما را معرفی می‌کنند 🎉' : npsScore >= 0 ? 'قابل قبول، جای رشد دارد' : 'نیاز به توجه فوری ⚠️');
+    $('#respCount').textContent = fa(subs.length);
   }
 
   /* ---------- نمودارها ---------- */
@@ -163,55 +211,43 @@
     var C = window.Charts;
     var moods = tally(function (a) { return a.satisfaction; }, Object.keys(LBL.mood), LBL.mood);
     moods.forEach(function (m) { m.color = MOOD_COLOR[m.key]; });
-    if (moods.length) C.donut($('#chMood'), moods);
-    else emptyChart($('#chMood'));
+    moods.length ? C.donut($('#chMood'), moods) : emptyChart($('#chMood'));
 
-    var starKeys = ['5', '4', '3', '2', '1'];
-    var starItems = tally(function (a) { return a.rating_stars ? String(a.rating_stars) : null; }, starKeys, { '5': '۵ ★', '4': '۴ ★', '3': '۳ ★', '2': '۲ ★', '1': '۱ ★' });
+    var starItems = tally(function (a) { return a.rating_stars ? String(a.rating_stars) : null; }, ['5', '4', '3', '2', '1'], { '5': '۵ ★', '4': '۴ ★', '3': '۳ ★', '2': '۲ ★', '1': '۱ ★' });
     starItems.forEach(function (s, i) { s.color = ['#34D399', '#22D3EE', '#FBBF24', '#FB7185', '#EF4444'][i]; });
-    if (starItems.length) C.bars($('#chStars'), starItems);
-    else emptyChart($('#chStars'));
+    starItems.length ? C.bars($('#chStars'), starItems) : emptyChart($('#chStars'));
 
     var npsHist = [];
     for (var n = 0; n <= 10; n++) {
       var c = DATA.subs.filter(function (s) { return +s.answers.recommend_nps === n; }).length;
       npsHist.push({ label: fa(n), value: c, color: n >= 9 ? '#34D399' : n >= 7 ? '#FBBF24' : '#FB7185' });
     }
-    if (npsHist.some(function (x) { return x.value; })) C.bars($('#chNps'), npsHist);
-    else emptyChart($('#chNps'));
+    npsHist.some(function (x) { return x.value; }) ? C.bars($('#chNps'), npsHist) : emptyChart($('#chNps'));
 
     var topics = tally(function (a) { return a.future_topics; }, Object.keys(LBL.topics), LBL.topics);
-    if (topics.length) C.hbars($('#chTopics'), topics);
-    else emptyChart($('#chTopics'));
+    topics.length ? C.hbars($('#chTopics'), topics) : emptyChart($('#chTopics'));
 
     var plats = tally(function (a) { return a.platforms; }, Object.keys(LBL.platforms), LBL.platforms);
-    if (plats.length) C.donut($('#chPlatforms'), plats);
-    else emptyChart($('#chPlatforms'));
+    plats.length ? C.donut($('#chPlatforms'), plats) : emptyChart($('#chPlatforms'));
 
     var sites = tally(function (a) { return a.site_rating; }, Object.keys(LBL.site), LBL.site);
     sites.forEach(function (s) { s.color = { 'good': '#34D399', 'mid': '#FBBF24', 'bad': '#FB7185' }[s.key]; });
-    if (sites.length) C.bars($('#chSite'), sites);
-    else emptyChart($('#chSite'));
+    sites.length ? C.bars($('#chSite'), sites) : emptyChart($('#chSite'));
 
     var vids = tally(function (a) { return a.video_content; }, Object.keys(LBL.video), LBL.video);
-    if (vids.length) C.bars($('#chVideo'), vids);
-    else emptyChart($('#chVideo'));
+    vids.length ? C.bars($('#chVideo'), vids) : emptyChart($('#chVideo'));
 
-    // روند ۱۴ روزه
     var days = [];
     for (var i = 13; i >= 0; i--) {
       var d = new Date(Date.now() - i * 864e5);
-      var key = d.toISOString().slice(0, 10);
-      days.push({ x_: (d.toLocaleDateString('fa-IR', { month: 'short', day: 'numeric' })), key: key, y: 0 });
+      days.push({ x_: d.toLocaleDateString('fa-IR', { month: 'short', day: 'numeric' }), key: d.toISOString().slice(0, 10), y: 0 });
     }
     DATA.subs.forEach(function (s) {
       var k = new Date(s.ts).toISOString().slice(0, 10);
       days.forEach(function (d) { if (d.key === k) d.y++; });
     });
-    if (DATA.subs.length) C.area($('#chTimeline'), days);
-    else emptyChart($('#chTimeline'));
+    DATA.subs.length ? C.area($('#chTimeline'), days) : emptyChart($('#chTimeline'));
 
-    // ابر لپ‌تاپ‌ها
     var lm = {};
     DATA.subs.forEach(function (s) {
       (s.answers.laptop_requests || []).forEach(function (n) { var t = n.trim(); if (t) lm[t] = (lm[t] || 0) + 1; });
@@ -221,7 +257,6 @@
       ? le.map(function (n, i) { return '<span class="chip" style="animation-delay:' + i * 30 + 'ms">' + esc(n) + ' <b>×' + fa(lm[n]) + '</b></span>'; }).join('')
       : '<span class="muted">هنوز لپ‌تاپی ثبت نشده</span>';
 
-    // آخرین ایده‌ها
     var ideas = DATA.subs.filter(function (s) { return s.answers.idea && s.answers.idea.trim(); })
       .sort(function (a, b) { return b.ts - a.ts; }).slice(0, 12);
     $('#ideaList').innerHTML = ideas.length
@@ -266,11 +301,11 @@
       box.innerHTML = '<div class="empty"><span class="big">💬</span>هنوز پاسخی ثبت نشده.<br>وقتی کاربران نظرسنجی را پر کنند اینجا نمایش داده می‌شود.</div>';
       return;
     }
-    box.innerHTML = list.map(function (s, i) {
+    box.innerHTML = list.map(function (s) {
       var a = s.answers;
       var stars = a.rating_stars ? '★'.repeat(+a.rating_stars) + '☆'.repeat(5 - (+a.rating_stars)) : '—';
       var row = function (k, v) { return v ? '<span class="k">' + k + '</span><span class="v">' + v + '</span>' : ''; };
-      return '<div class="resp" data-i="' + i + '">' +
+      return '<div class="resp">' +
         '<div class="resp-head"><span class="nm">' + esc(who(s)) + '</span>' +
         '<span class="meta"><span class="stars-mini">' + stars + '</span><span>NPS ' + fa(a.recommend_nps == null ? '—' : a.recommend_nps) + '</span><span>' + fmtDate(s.ts) + '</span></span></div>' +
         '<div class="resp-body"><div class="kv">' +
@@ -289,31 +324,35 @@
     });
   }
 
-  /* ---------- فعالیت ---------- */
+  /* ---------- فعالیت (با فیلتر) ---------- */
   function renderActivity() {
     var items = [];
     DATA.events.forEach(function (e) {
-      var icon = e.type === 'submit' ? '📨' : e.type === 'start' ? '👋' : '💬';
+      var f = e.type === 'submit' ? 'submit' : e.type === 'start' ? 'start' : 'other';
+      var icon = e.type === 'submit' ? '📨' : e.type === 'start' ? '👋' : e.type === 'control' ? '🎛️' : e.type === 'control-fail' ? '⛔' : '💬';
       var txt = e.type === 'submit' ? 'نظر جدید ثبت شد' + (e.username ? ' — @' + esc(e.username) : '')
         : e.type === 'start' ? 'کاربر استارت زد' + (e.username ? ' — @' + esc(e.username) : (e.user_id ? ' — ' + fa(e.user_id) : ''))
-          : 'پیام دیگر' + (e.username ? ' — @' + esc(e.username) : '');
-      items.push({ ts: e.ts, html: '<span class="ic">' + icon + '</span><span><span class="tt">' + txt + '</span><br><span class="ts">' + fmtDate(e.ts) + '</span></span>' });
+          : e.type === 'control' ? 'نظرسنجی ' + (e.action === 'open' ? 'باز' : 'بسته') + ' شد'
+            : e.type === 'control-fail' ? 'تلاش نامعتبر برای تغییر وضعیت'
+              : 'پیام دیگر' + (e.username ? ' — @' + esc(e.username) : '');
+      items.push({ f: f, ts: e.ts, html: '<span class="ic">' + icon + '</span><span><span class="tt">' + txt + '</span><br><span class="ts">' + fmtDate(e.ts) + '</span></span>' });
     });
     DATA.panelLog.forEach(function (e) {
       var txt = {
         'login': 'ورود به پنل', 'logout': 'خروج از پنل', 'login-fail': 'تلاش ناموفق ورود',
-        'sync': 'سینک دستی', 'survey-open': 'باز کردن نظرسنجی', 'survey-close': 'بستن نظرسنجی',
+        'sync': 'سینک فوری', 'survey-open': 'باز کردن نظرسنجی', 'survey-close': 'بستن نظرسنجی',
         'export-csv': 'خروجی CSV', 'export-json': 'خروجی JSON'
       }[e.action] || e.action;
-      items.push({ ts: e.ts, html: '<span class="ic">🛡️</span><span><span class="tt">پنل: ' + esc(txt) + '</span><br><span class="ts">' + fmtDate(e.ts) + '</span></span>' });
+      items.push({ f: 'panel', ts: e.ts, html: '<span class="ic">🛡️</span><span><span class="tt">پنل: ' + esc(txt) + '</span><br><span class="ts">' + fmtDate(e.ts) + '</span></span>' });
     });
     items.sort(function (a, b) { return b.ts - a.ts; });
+    if (actFilter !== 'all') items = items.filter(function (i) { return i.f === actFilter || (actFilter === 'panel' && i.f === 'panel'); });
     $('#actFeed').innerHTML = items.length
       ? items.slice(0, 150).map(function (e, i) { return '<div class="ev" style="animation-delay:' + Math.min(i * 20, 400) + 'ms">' + e.html + '</div>'; }).join('')
-      : '<div class="empty"><span class="big">🕓</span>فعلاً فعالیتی ثبت نشده.</div>';
+      : '<div class="empty"><span class="big">🕓</span>موردی در این بخش نیست.</div>';
   }
 
-  /* ---------- وضعیت نظرسنجی ---------- */
+  /* ---------- وضعیت ---------- */
   function renderStatus() {
     var open = DATA.status.open !== false;
     var b = $('#statusBadge');
@@ -323,51 +362,66 @@
     sw.classList.toggle('on', open);
     sw.setAttribute('aria-checked', String(open));
     $('#toggleLabel').textContent = open ? 'نظرسنجی باز است' : 'نظرسنجی بسته است';
+    var hasTok = !!localStorage.getItem(LS.gh);
+    $('#toggleHint').classList.toggle('hidden', hasTok);
+    $('#tokState').textContent = hasTok ? '✅ توکن مدیر ذخیره شده — کنترل کامل فعال است' : 'توکنی ذخیره نشده (اختیاری)';
   }
 
   function toggleSurvey() {
-    var open = DATA.status.open !== false;
-    var next = !open;
-    var content = JSON.stringify({ open: next, updatedAt: Date.now() }, null, 2);
+    if (!localStorage.getItem(LS.gh)) {
+      $('#toggleHint').classList.remove('hidden');
+      document.querySelector('[data-view="settings"]').click();
+      toast('برای تغییر از پنل، توکن گیت‌هاب را در «دسترسی مدیر» ذخیره کنید — یا از تلگرام: /close رمز', 5000);
+      return;
+    }
+    var next = DATA.status.open === false;
     $('#surveyToggle').disabled = true;
-    ghPutFile(SURVEY_REPO, 'status.json', content, DATA.stFile && DATA.stFile.sha, next ? 'survey: open' : 'survey: close')
+    gh('GET', '/repos/' + OWNER + '/' + SURVEY_REPO + '/contents/status.json')
+      .then(function (f) {
+        return gh('PUT', '/repos/' + OWNER + '/' + SURVEY_REPO + '/contents/status.json', {
+          message: next ? 'survey: open' : 'survey: close',
+          content: btoa(JSON.stringify({ open: next, updatedAt: Date.now() }, null, 2)),
+          sha: f.sha, branch: 'main'
+        });
+      })
       .then(function () {
         DATA.status = { open: next };
         renderStatus();
         logAction(next ? 'survey-open' : 'survey-close');
-        toast(next ? '✅ نظرسنجی باز شد' : '🔒 نظرسنجی بسته شد — کاربران پیام بسته بودن می‌بینند');
-        return ghGetFile(SURVEY_REPO, 'status.json');
+        toast(next ? '✅ نظرسنجی باز شد' : '🔒 نظرسنجی بسته شد');
       })
-      .then(function (f) { DATA.stFile = f; })
       .catch(function (e) { toast('❌ خطا: ' + e.message, 4000); })
       .finally(function () { $('#surveyToggle').disabled = false; });
   }
 
-  /* ---------- سینک ---------- */
   function syncNow() {
+    if (!localStorage.getItem(LS.gh)) {
+      toast('سینک فوری به توکن مدیر نیاز دارد — سینک خودکار هر ۳۰ دقیقه انجام می‌شود', 4500);
+      document.querySelector('[data-view="settings"]').click();
+      return;
+    }
     var btn = $('#syncBtn');
     btn.disabled = true;
     btn.textContent = '⟳ در حال سینک…';
     gh('POST', '/repos/' + OWNER + '/' + DATA_REPO + '/actions/workflows/sync.yml/dispatches', { ref: 'main' })
       .then(function () { return waitRun(0); })
-      .then(function () { return loadData(); })
+      .then(function () { return refreshData(true); })
       .then(function () {
-        renderAll();
         logAction('sync');
         toast('✅ سینک انجام شد — ' + fa(DATA.subs.length) + ' نظر');
       })
       .catch(function (e) { toast('❌ سینک ناموفق: ' + e.message, 4000); })
-      .finally(function () { btn.disabled = false; btn.textContent = '⟳ سینک'; });
+      .finally(function () { btn.disabled = false; btn.textContent = '⟳ سینک فوری'; });
   }
 
   function waitRun(tries) {
-    if (tries > 14) return Promise.reject(new Error('timeout'));
+    if (tries > 16) return Promise.reject(new Error('timeout'));
     return gh('GET', '/repos/' + OWNER + '/' + DATA_REPO + '/actions/runs?per_page=1&_=' + Date.now())
       .then(function (d) {
         var r = d.workflow_runs && d.workflow_runs[0];
         if (r && r.status === 'completed') {
           if (r.conclusion !== 'success') throw new Error('run failed');
-          return true;
+          return new Promise(function (res) { setTimeout(res, 4000); }); // فرصت انتشار data.enc
         }
         return new Promise(function (res) { setTimeout(res, 5000); }).then(function () { return waitRun(tries + 1); });
       });
@@ -396,89 +450,80 @@
     logAction('export-csv');
   }
 
-  /* ---------- رندر کلی ---------- */
+  /* ---------- رندر ---------- */
   function renderAll() {
     renderKpis();
     renderCharts();
     renderResponses();
     renderActivity();
     renderStatus();
-    $('#connInfo').innerHTML = 'GitHub: ' + OWNER + '<br>Data repo: ' + DATA_REPO + ' (private)<br>Survey repo: ' + SURVEY_REPO + '<br>آخرین بارگذاری: ' + fmtDate(Date.now());
   }
 
-  /* ---------- Gate ---------- */
-  function enterApp() {
-    $('#gate').classList.add('hidden');
-    $('#app').classList.remove('hidden');
-    loadData().then(renderAll).catch(function (e) {
-      toast('❌ خطا در خواندن داده: ' + e.message, 5000);
-    });
-  }
-
-  function tryPassword() {
-    if ($('#pwInput').value === PASS) {
-      sessionStorage.setItem(LS.pw, '1');
-      logActionSafe('login');
-      if (localStorage.getItem(LS.bot) && localStorage.getItem(LS.gh)) enterApp();
-      else { $('#gatePw').classList.add('hidden'); $('#gateTok').classList.remove('hidden'); }
-    } else {
-      $('#pwErr').textContent = 'رمز اشتباه است';
-      logActionSafe('login-fail');
-    }
-  }
-
-  function logActionSafe(type) {
-    try { logAction(type); } catch (e) {}
-  }
-
-  function tryTokens() {
-    var bot = $('#botTok').value.trim(), ght = $('#ghTok').value.trim();
-    var err = $('#tokErr');
+  /* ---------- ورود ---------- */
+  function tryLogin() {
+    var pass = $('#pwInput').value;
+    var btn = $('#pwBtn');
+    var err = $('#pwErr');
     err.textContent = '';
-    var btn = $('#tokBtn');
+    if (!pass) { err.textContent = 'رمز را وارد کنید'; return; }
     btn.disabled = true;
-    btn.textContent = 'در حال بررسی…';
-    Promise.all([
-      fetch('https://api.telegram.org/bot' + bot + '/getMe').then(function (r) { return r.json(); }),
-      fetch('https://api.github.com/user', { headers: { 'Authorization': 'token ' + ght, 'User-Agent': 'binoosha-panel' } })
-        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
-    ]).then(function (res) {
-      if (!res[0].ok) throw new Error('توکن ربات معتبر نیست');
-      if (!res[1].ok) throw new Error('توکن گیت‌هاب معتبر نیست');
-      if (res[1].j.login !== OWNER) throw new Error('این توکن گیت‌هاب به حساب ' + OWNER + ' تعلق ندارد');
-      localStorage.setItem(LS.bot, bot);
-      localStorage.setItem(LS.gh, ght);
-      enterApp();
-    }).catch(function (e) {
-      err.textContent = e.message;
-    }).finally(function () {
-      btn.disabled = false;
-      btn.textContent = 'اتصال و ورود';
-    });
-  }
-
-  function logout() {
-    logActionSafe('logout');
-    sessionStorage.removeItem(LS.pw);
-    location.reload();
+    btn.textContent = 'در حال رمزگشایی…';
+    loadEncrypted(pass)
+      .then(function () {
+        sessionStorage.setItem('bn_pass', pass);
+        logAction('login');
+        loadStatus().then(function () {
+          $('#gate').classList.add('hidden');
+          $('#app').classList.remove('hidden');
+          renderAll();
+        });
+      })
+      .catch(function (e) {
+        err.textContent = e.message || 'خطا در اتصال';
+        if (/رمز اشتباه/.test(e.message || '')) {
+          try {
+            var arr = localLog();
+            arr.push({ ts: Date.now(), type: 'panel', action: 'login-fail' });
+            localStorage.setItem(LS.localLog, JSON.stringify(arr.slice(-200)));
+          } catch (e2) {}
+        }
+      })
+      .finally(function () {
+        btn.disabled = false;
+        btn.textContent = 'ورود به پنل';
+      });
   }
 
   /* ---------- رویدادها ---------- */
-  $('#pwBtn').addEventListener('click', tryPassword);
-  $('#pwInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') tryPassword(); });
-  $('#tokBtn').addEventListener('click', tryTokens);
-  $('#logoutBtn').addEventListener('click', logout);
-  $('#syncBtn').addEventListener('click', syncNow);
+  $('#pwBtn').addEventListener('click', tryLogin);
+  $('#pwInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') tryLogin(); });
+  $('#logoutBtn').addEventListener('click', function () {
+    logAction('logout');
+    sessionStorage.removeItem('bn_pass');
+    location.reload();
+  });
+  $('#refreshBtn').addEventListener('click', function () { refreshData(false); });
   $('#surveyToggle').addEventListener('click', toggleSurvey);
+  $('#syncBtn').addEventListener('click', syncNow);
+  $('#saveTok').addEventListener('click', function () {
+    var t = $('#ghTok').value.trim();
+    if (!t) { toast('توکن را وارد کنید'); return; }
+    fetch('https://api.github.com/user', { headers: { 'Authorization': 'token ' + t, 'User-Agent': 'binoosha-panel' } })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error('invalid');
+        if (res.j.login !== OWNER) throw new Error('wrong account');
+        localStorage.setItem(LS.gh, t);
+        $('#ghTok').value = '';
+        renderStatus();
+        toast('✅ توکن مدیر ذخیره شد');
+      })
+      .catch(function (e) { toast('❌ توکن معتبر نیست' + (e.message === 'wrong account' ? ' (باید متعلق به ' + OWNER + ' باشد)' : '')); });
+  });
   $('#expCsv').addEventListener('click', exportCsv);
   $('#expJson').addEventListener('click', function () {
     download('binoosha-responses.json', JSON.stringify(DATA.subs, null, 2), 'application/json');
     logAction('export-json');
-  });
-  $('#reTokBtn').addEventListener('click', function () {
-    localStorage.removeItem(LS.bot);
-    localStorage.removeItem(LS.gh);
-    location.reload();
   });
   $('#respSearch').addEventListener('input', renderResponses);
   $('#respSort').addEventListener('change', renderResponses);
@@ -490,14 +535,24 @@
       $('#view-' + b.dataset.view).classList.add('active');
     });
   });
+  Array.prototype.forEach.call(document.querySelectorAll('.fchip'), function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('.fchip').forEach(function (x) { x.classList.remove('active'); });
+      b.classList.add('active');
+      actFilter = b.dataset.f;
+      renderActivity();
+    });
+  });
   addEventListener('resize', function () {
     clearTimeout(window._rz);
     window._rz = setTimeout(function () { if (!$('#app').classList.contains('hidden')) renderCharts(); }, 250);
   });
 
-  /* ---------- شروع ---------- */
-  if (sessionStorage.getItem(LS.pw) === '1') {
-    if (localStorage.getItem(LS.bot) && localStorage.getItem(LS.gh)) enterApp();
-    else { $('#gatePw').classList.add('hidden'); $('#gateTok').classList.remove('hidden'); }
+  /* ---------- شروع: اگر نشست فعال است مستقیم وارد شو ---------- */
+  if (sessionStorage.getItem('bn_pass')) {
+    refreshData(true).then(function () {
+      $('#gate').classList.add('hidden');
+      $('#app').classList.remove('hidden');
+    }).catch(function () { sessionStorage.removeItem('bn_pass'); });
   }
 })();

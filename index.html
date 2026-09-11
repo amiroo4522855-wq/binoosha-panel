@@ -9,29 +9,18 @@
 </head>
 <body>
 
-<!-- ============ ورود ============ -->
+<!-- ============ ورود (فقط رمز) ============ -->
 <div id="gate" class="gate">
   <div class="gate-card">
     <div class="gate-logo">🟣</div>
     <h1>پنل مدیریت بینوشا</h1>
-    <p class="gate-sub">دسترسی فقط برای تیم</p>
-
-    <div id="gatePw" class="gate-step">
-      <label for="pwInput">رمز ورود</label>
-      <input type="password" id="pwInput" placeholder="••••••••" autocomplete="current-password">
+    <p class="gate-sub">رمز عبور را وارد کنید</p>
+    <div class="gate-step">
+      <input type="password" id="pwInput" placeholder="رمز پنل" autocomplete="current-password">
       <div id="pwErr" class="gate-err"></div>
-      <button id="pwBtn" class="gbtn">ورود</button>
+      <button id="pwBtn" class="gbtn">ورود به پنل</button>
     </div>
-
-    <div id="gateTok" class="gate-step hidden">
-      <label for="botTok">توکن ربات تلگرام</label>
-      <input type="password" id="botTok" placeholder="123456:ABC..." dir="ltr">
-      <label for="ghTok">توکن گیت‌هاب (دسترسی repo)</label>
-      <input type="password" id="ghTok" placeholder="ghp_..." dir="ltr">
-      <div id="tokErr" class="gate-err"></div>
-      <button id="tokBtn" class="gbtn">اتصال و ورود</button>
-      <p class="gate-note">توکن‌ها فقط در مرورگر خودت ذخیره می‌شوند — نه روی سرور، نه در کد.</p>
-    </div>
+    <p class="gate-note">داده‌ها رمزنگاری‌شده‌اند و فقط با رمز شما باز می‌شوند.</p>
   </div>
 </div>
 
@@ -41,14 +30,14 @@
     <div class="brand"><span class="dot"></span> پنل بینوشا</div>
     <div class="top-actions">
       <span id="statusBadge" class="badge open">● نظرسنجی باز</span>
-      <button id="syncBtn" class="tbtn" title="سینک فوری">⟳ سینک</button>
+      <button id="refreshBtn" class="tbtn" title="بارگذاری مجدد داده‌ها">⟳ بروزرسانی</button>
       <button id="logoutBtn" class="tbtn ghost" title="خروج">خروج</button>
     </div>
   </header>
 
   <nav class="nav">
     <button class="navi active" data-view="dash">📊 داشبورد</button>
-    <button class="navi" data-view="responses">💬 پاسخ‌ها</button>
+    <button class="navi" data-view="responses">💬 پاسخ‌ها <span id="respCount" class="pill"></span></button>
     <button class="navi" data-view="activity">🕓 فعالیت</button>
     <button class="navi" data-view="settings">⚙️ تنظیمات</button>
   </nav>
@@ -86,6 +75,12 @@
 
     <!-- فعالیت -->
     <section id="view-activity" class="view">
+      <div class="filter-chips">
+        <button class="fchip active" data-f="all">همه</button>
+        <button class="fchip" data-f="start">👋 استارت‌ها</button>
+        <button class="fchip" data-f="submit">📨 نظرات</button>
+        <button class="fchip" data-f="panel">🛡️ پنل</button>
+      </div>
       <div id="actFeed" class="feed"></div>
     </section>
 
@@ -93,12 +88,14 @@
     <section id="view-settings" class="view">
       <div class="card setcard">
         <h3>وضعیت نظرسنجی</h3>
-        <p class="muted">با بستن نظرسنجی، همه کاربران پیام «نظرسنجی بسته شده» می‌بینند. تغییر تقریباً فوری اعمال می‌شود.</p>
+        <p class="muted">با بستن نظرسنجی، همه کاربران پیام «نظرسنجی بسته شده» می‌بینند.</p>
         <div class="toggle-row">
           <span id="toggleLabel">نظرسنجی باز است</span>
           <button id="surveyToggle" class="switch on" role="switch" aria-checked="true"><i></i></button>
         </div>
+        <p id="toggleHint" class="muted small hidden">برای تغییر وضعیت از پنل، یک‌بار توکن گیت‌هاب را در بخش «دسترسی مدیر» وارد کنید — یا از تلگرام به ربات پیام دهید: <code dir="ltr">/close رمز</code> یا <code dir="ltr">/open رمز</code></p>
       </div>
+
       <div class="card setcard">
         <h3>خروجی گرفتن</h3>
         <div class="row-btns">
@@ -106,11 +103,17 @@
           <button id="expJson" class="gbtn small">🧾 دانلود JSON</button>
         </div>
       </div>
-      <div class="card setcard">
-        <h3>اطلاعات اتصال</h3>
-        <div id="connInfo" class="conn"></div>
-        <button id="reTokBtn" class="gbtn small ghost">تغییر توکن‌ها</button>
-      </div>
+
+      <details class="card setcard">
+        <summary class="sum">دسترسی مدیر (اختیاری)</summary>
+        <p class="muted">فقط برای «بستن/باز کردن نظرسنجی از داخل پنل» و «سینک فوری» لازم است. توکن فقط در مرورگر خودت ذخیره می‌شود.</p>
+        <input type="password" id="ghTok" class="tokinp" placeholder="ghp_..." dir="ltr">
+        <div class="row-btns">
+          <button id="saveTok" class="gbtn small">ذخیره توکن</button>
+          <button id="syncBtn" class="gbtn small ghost">⟳ سینک فوری</button>
+        </div>
+        <div id="tokState" class="muted small"></div>
+      </details>
     </section>
   </main>
 </div>
